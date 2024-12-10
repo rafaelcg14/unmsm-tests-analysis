@@ -4,6 +4,9 @@ import os
 import altair as alt
 import pathlib
 
+from src.utils.handle_data import load_dataframe, career_exists_for_year
+from src.utils.generate_plots import generate_histogram, generate_boxplot
+
 # Set page config
 st.set_page_config(
     page_title="Exámenes de Admisión UNMSM - Dashboard",
@@ -22,33 +25,8 @@ load_css(css_path)
 
 # Methods
 @st.cache_data
-def load_dataframe(year, career):
-    filepath = f"data/processed/{year}/{year}-{career}.csv"
-    return pd.read_csv(filepath)
-
-def generate_histogram(df, x: str, y: str, x_axis_title: str, y_axis_title: str, title="", maxbins=10, field_legend="", height=300):
-    hist = alt.Chart(df).mark_bar().encode(
-        x=alt.X(x, title=x_axis_title, bin=True).bin(maxbins=maxbins),
-        y=alt.Y(y, title=y_axis_title),
-        color=alt.Color(field_legend, legend=alt.Legend(title="", orient="top-right", direction="horizontal"))
-    ).properties(
-        title=title,
-        height=height
-    )
-
-    return hist
-
-def generate_boxplot(df, x: str, y: str, x_axis_title: str, y_axis_title: str, title="", height=300, field_legend=""):
-    boxplot = alt.Chart(df).mark_boxplot(extent="min-max", color="white").encode(
-        x=alt.X(x, title=x_axis_title).scale(zero=False),
-        y=alt.Y(y, title=y_axis_title),
-        color=alt.Color(field_legend, legend=None)
-    ).properties(
-        title=title,
-        height=height
-    )
-
-    return boxplot
+def load_dataframe_cached(year, career):
+    return load_dataframe(year, career)
 
 @st.cache_data
 def generate_analysis(df, analysis_type="general", **kwargs):
@@ -61,8 +39,6 @@ def generate_analysis(df, analysis_type="general", **kwargs):
 
     # Get desired metrics
     total_applicants = df[ df["carrera"] == career ].shape[0]
-    n_direct_passed_students = direct_passed_students.shape[0]
-    n_second_choice_students = second_choice_students.shape[0]
     n_approved_students = approved_students.shape[0]
     n_failed_students = df["observacion"].isna().sum()
     n_absent_students = df[ df["observacion"] == "AUSENTE"].shape[0]
@@ -193,21 +169,65 @@ def generate_analysis(df, analysis_type="general", **kwargs):
         )
 
     elif analysis_type == "trend_over_years":
-        
+        dataframes = kwargs.get("dataframes", None)
 
-        pass
-        
-        
+        df_direct_passed = {
+            year: dataframes[year][dataframes[year]["observacion"].isin(["ALCANZO VACANTE", "ALCANZO VACANTE PRIMERA OPCIÓN"])]
+            for year in dataframes.keys()
+        }
+        df_second_choice = {
+            year: dataframes[year][dataframes[year]["segunda_opcion"] == career]
+            for year in dataframes.keys()
+        }
+        df_approved = {
+            year: pd.concat([df_direct_passed[year], df_second_choice[year]])
+            for year in dataframes.keys()
+        }
 
+        # Find max, min and mean values
+        max_scores = {}
+        min_scores = {}
+        mean_scores = {}
 
+        for year, df in df_approved.items():
+            if not df.empty:
+                max_scores[year] = df["puntaje"].max()
+                min_scores[year] = df["puntaje"].min()
+                mean_scores[year] = df["puntaje"].mean()
+            else:
+                max_scores[year] = None
+                min_scores[year] = None
+                mean_scores[year] = None
+
+        # New dataframe for computed scores filtering years out with any values
+        trend_df = pd.DataFrame({
+            "Año": list(dataframes.keys()),
+            "Máximo": list(max_scores.values()),
+            "Mínimo": list(min_scores.values()),
+            "Promedio": list(mean_scores.values())
+        }).dropna( subset=["Máximo", "Mínimo", "Promedio"] )
+
+        # Reshape to long format
+        trend_df = trend_df.melt(id_vars="Año", var_name="Tipo de puntaje", value_name="Puntaje")
+
+        # Plot the trend using Altair
+        trend_chart = alt.Chart(trend_df).mark_line(point=True).encode(
+            x=alt.X("Año:N", title="", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("Puntaje:Q", title="Puntaje", scale=alt.Scale(zero=False)),
+            color=alt.Color("Tipo de puntaje:N", title="Tipo de puntaje"),
+            tooltip=["Año", "Tipo de puntaje", "Puntaje"]
+        ).properties(
+            title=f"Tendencia de puntajes de ingreso",
+            height=250
+        )
+
+        return trend_chart
+        
     else:
         raise ValueError(f"Invalid analysis type: {analysis_type}")
 
-# Sidebar
-# TODO: Add pages to sidebar
 
-
-
+# Dashboard Layout
 st.header("Exámenes de Admisión UNMSM - Dashboard :bar_chart:")
 
 # Filters
@@ -230,16 +250,26 @@ with filter_col2:
 
 # Load data
 try:
-    df = load_dataframe(year_option, career_option)
+    # Load the dataframe for the selected year
+    if career_exists_for_year(year_option, career_option):
+        df = load_dataframe_cached(year_option, career_option)
+    else:
+        st.info(f"No se encontró información para la carrera {career_option} en el año {year_option}.")
+        df = None
 
-    # Create a dictionary of dataframes with the years as keys and the dataframes as values for the career of each year selected
-    dataframes = {year: load_dataframe(year, career_option) for year in years_list}
+    # Load dataframes for the rest of the years
+    valid_years = [year for year in years_list if career_exists_for_year(year, career_option)]
+    if valid_years:
+        dataframes = {year: load_dataframe_cached(year, career_option) for year in valid_years}
+    else:
+        st.info(f"No se encontraron datos para la carrera {career_option} en ningún año seleccionado.")
+        dataframes = {}
 
 except FileNotFoundError:
-    st.info("No se ha encontrado algún archivo.")
+    st.info("No se encontró algún archivo.")
 
 
-# Display dashboard
+# Plots
 cols = st.columns(4)
 
 metrics = generate_analysis(df, analysis_type="kpis", career=career_option)
@@ -249,18 +279,16 @@ for i, key, value in zip(range(4), metrics.keys(), metrics.values()):
         with st.container(border=True):
             st.metric(label=key, value=value)
             
-
-
 cols = st.columns([3, 1])
 
 with cols[0]:
     with st.container(border=True):
-        # if "df" in locals():
         general_analysis_chart = generate_analysis(df, analysis_type="general", career=career_option)
         st.altair_chart(general_analysis_chart, theme="streamlit", use_container_width=True)
 
-        # trend_chart = generate_analysis(df, analysis_type="trend_over_years", career=career_option)
-        # st.altair_chart(trend_chart, theme="streamlit", use_container_width=True)
+    with st.container(border=True):
+        trend_chart = generate_analysis(df, analysis_type="trend_over_years", career=career_option, dataframes=dataframes)
+        st.altair_chart(trend_chart, theme="streamlit", use_container_width=True)
     
 with cols[1]:
     with st.container(border=True):

@@ -48,7 +48,6 @@ azure_credentials.json
 *.mp3
 *.pdf
 *.tmp
-*.csv
 
 # Uploaded/downloaded files
 downloads/

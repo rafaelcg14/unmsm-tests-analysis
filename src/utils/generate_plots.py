@@ -23,3 +23,22 @@ def generate_boxplot(df, x: str, y: str, x_axis_title: str, y_axis_title: str, t
     )
 
     return boxplot
+
+def generate_bar_chart(df, x, y, x_axis_title, y_axis_title, title="", height=180):
+    bars = alt.Chart(df).mark_bar().encode(
+        x=alt.X(x, title=x_axis_title),
+        y=alt.Y(y, title=y_axis_title),
+        color=alt.Color("observacion", legend=None),
+    )
+
+    text = bars.mark_text(
+        align="left",
+        baseline="middle",
+        dx=3
+    ).encode(
+        text="count"
+    )
+
+    bar_chart = (bars + text).properties(height=height, title=title)
+
+    return bar_chart
